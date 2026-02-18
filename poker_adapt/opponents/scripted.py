@@ -13,6 +13,33 @@ def _legal_action_ids(state) -> list[int]:
     return list(legal)
 
 
+def _raw_legal_set(state) -> set[str]:
+    raw = state.get("raw_legal_actions")
+    if not raw:
+        return set()
+    return {str(x).lower() for x in raw}
+
+
+def _id_for_name(action_map: ActionMap, legal_ids: list[int], name: str) -> int | None:
+    for aid in legal_ids:
+        if action_map.id_to_name.get(aid, str(aid)) == name:
+            return aid
+    return None
+
+
+def _id_for_call(action_map: ActionMap, legal_ids: list[int]) -> int | None:
+    # Some RLCard setups may effectively merge check/call behavior.
+    return _id_for_name(action_map, legal_ids, "call") or _id_for_name(
+        action_map, legal_ids, "check"
+    )
+
+
+def _id_for_check(action_map: ActionMap, legal_ids: list[int]) -> int | None:
+    return _id_for_name(action_map, legal_ids, "check") or _id_for_name(
+        action_map, legal_ids, "call"
+    )
+
+
 def _legal_names(action_map: ActionMap, legal_ids: list[int]) -> set[str]:
     return {action_map.id_to_name.get(aid, str(aid)) for aid in legal_ids}
 
@@ -20,16 +47,11 @@ def _legal_names(action_map: ActionMap, legal_ids: list[int]) -> set[str]:
 def _pick_first_legal(
     action_map: ActionMap, legal_ids: list[int], preferred_names: list[str]
 ) -> int | None:
-    legal_name_set = _legal_names(action_map, legal_ids)
     for name in preferred_names:
-        if name in legal_name_set:
-            return action_map.name_to_id[name]
+        aid = _id_for_name(action_map, legal_ids, name)
+        if aid is not None:
+            return aid
     return None
-
-
-def _is_facing_bet(legal_name_set: set[str]) -> bool:
-    # Heuristic: when "call" is legal but "check" is not, you're likely facing a bet/raise.
-    return ("call" in legal_name_set) and ("check" not in legal_name_set)
 
 
 class ScriptedBaseAgent:
@@ -47,6 +69,7 @@ class ScriptedBaseAgent:
         self.action_counter[name] += 1
         self.facing_bet_counter["yes" if facing_bet else "no"] += 1
 
+
     def step(self, state) -> int:
         raise NotImplementedError
 
@@ -63,26 +86,25 @@ class TightPassiveAgent(ScriptedBaseAgent):
     def step(self, state) -> int:
         legal_ids = _legal_action_ids(state)
         legal_set = _legal_names(self.action_map, legal_ids)
-        facing_bet = _is_facing_bet(legal_set)
+        facing_bet = "call" in legal_set
+
 
         action_id: int | None = None
 
         if facing_bet:
-            # Prefer folding vs bets, sometimes call.
             if "fold" in legal_set and self.rng.random() < 0.70:
-                action_id = self.action_map.name_to_id["fold"]
-            elif "call" in legal_set and self.rng.random() < 0.80:
-                action_id = self.action_map.name_to_id["call"]
+                action_id = _id_for_name(self.action_map, legal_ids, "fold")
+            elif self.rng.random() < 0.80:
+                action_id = _id_for_call(self.action_map, legal_ids)
             else:
                 action_id = _pick_first_legal(self.action_map, legal_ids, ["fold", "call", "check"])
         else:
-            # Mostly check, very rarely raise.
-            if "check" in legal_set and self.rng.random() < 0.85:
-                action_id = self.action_map.name_to_id["check"]
+            if self.rng.random() < 0.85:
+                action_id = _id_for_check(self.action_map, legal_ids)
             elif "raise_half_pot" in legal_set and self.rng.random() < 0.12:
-                action_id = self.action_map.name_to_id["raise_half_pot"]
+                action_id = _id_for_name(self.action_map, legal_ids, "raise_half_pot")
             elif "raise_pot" in legal_set and self.rng.random() < 0.03:
-                action_id = self.action_map.name_to_id["raise_pot"]
+                action_id = _id_for_name(self.action_map, legal_ids, "raise_pot")
             else:
                 action_id = _pick_first_legal(
                     self.action_map, legal_ids, ["check", "call", "raise_half_pot", "raise_pot"]
@@ -103,18 +125,19 @@ class LooseAggressiveAgent(ScriptedBaseAgent):
     def step(self, state) -> int:
         legal_ids = _legal_action_ids(state)
         legal_set = _legal_names(self.action_map, legal_ids)
-        facing_bet = _is_facing_bet(legal_set)
+
+        facing_bet = "call" in legal_set
+
 
         action_id: int | None = None
 
-        # Prefer aggressive actions in a prioritized way.
         r = self.rng.random()
         if "raise_pot" in legal_set and r < 0.50:
-            action_id = self.action_map.name_to_id["raise_pot"]
+            action_id = _id_for_name(self.action_map, legal_ids, "raise_pot")
         elif "raise_half_pot" in legal_set and r < 0.85:
-            action_id = self.action_map.name_to_id["raise_half_pot"]
+            action_id = _id_for_name(self.action_map, legal_ids, "raise_half_pot")
         elif "all_in" in legal_set and r < 0.95:
-            action_id = self.action_map.name_to_id["all_in"]
+            action_id = _id_for_name(self.action_map, legal_ids, "all_in")
         else:
             action_id = _pick_first_legal(
                 self.action_map,
@@ -137,22 +160,23 @@ class CallingStationAgent(ScriptedBaseAgent):
     def step(self, state) -> int:
         legal_ids = _legal_action_ids(state)
         legal_set = _legal_names(self.action_map, legal_ids)
-        facing_bet = _is_facing_bet(legal_set)
+
+        facing_bet = "call" in legal_set
 
         action_id: int | None = None
 
         if facing_bet:
-            if "call" in legal_set and self.rng.random() < 0.90:
-                action_id = self.action_map.name_to_id["call"]
+            if self.rng.random() < 0.90:
+                action_id = _id_for_call(self.action_map, legal_ids)
             elif "raise_half_pot" in legal_set and self.rng.random() < 0.05:
-                action_id = self.action_map.name_to_id["raise_half_pot"]
+                action_id = _id_for_name(self.action_map, legal_ids, "raise_half_pot")
             else:
                 action_id = _pick_first_legal(
                     self.action_map, legal_ids, ["call", "check", "raise_half_pot", "fold"]
                 )
         else:
-            if "check" in legal_set and self.rng.random() < 0.90:
-                action_id = self.action_map.name_to_id["check"]
+            if self.rng.random() < 0.90:
+                action_id = _id_for_check(self.action_map, legal_ids)
             else:
                 action_id = _pick_first_legal(
                     self.action_map, legal_ids, ["check", "call", "raise_half_pot"]

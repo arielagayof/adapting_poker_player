@@ -6,6 +6,7 @@ from collections import Counter
 import rlcard
 
 from poker_adapt.opponents.action_map import build_action_map
+from poker_adapt.opponents.probe_aggressive import ProbeAggressiveAgent
 from poker_adapt.opponents.random_legal import RandomLegalAgent
 from poker_adapt.opponents.scripted import (
     CallingStationAgent,
@@ -38,6 +39,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--opponent", required=True, choices=["TP", "LAG", "CS"])
     parser.add_argument("--hands", type=int, default=200)
+    parser.add_argument("--learner", choices=["random", "probe"], default="probe")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -53,7 +55,11 @@ def main():
 
     action_map = build_action_map(env)
 
-    learner = RandomLegalAgent(action_map, seed=args.seed)
+    if args.learner == "probe":
+        learner = ProbeAggressiveAgent(action_map, seed=args.seed)
+    else:
+        learner = RandomLegalAgent(action_map, seed=args.seed)
+
     opponent = make_opponent(args.opponent, action_map, seed=args.seed + 1)
 
     env.set_agents([learner, opponent])
@@ -66,13 +72,16 @@ def main():
     avg_payoff = total_payoff / args.hands
 
     print(f"env=no-limit-holdem hands={args.hands} seed={args.seed}")
-    print(f"learner=RandomLegalAgent opponent={args.opponent}")
+    print(f"learner={learner.__class__.__name__} opponent={args.opponent}")
     print(f"avg_payoff_per_hand(player0)={avg_payoff:.4f}")
     print("\nOpponent action distribution:")
     print(_format_counter(opponent.action_counter))
 
     print("\nOpponent facing_bet frequency (heuristic):")
     print(_format_counter(opponent.facing_bet_counter))
+
+    print("\nLearner action distribution:")
+    print(_format_counter(learner.action_counter))
 
 
 if __name__ == "__main__":
