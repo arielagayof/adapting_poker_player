@@ -69,7 +69,6 @@ class ScriptedBaseAgent:
         self.action_counter[name] += 1
         self.facing_bet_counter["yes" if facing_bet else "no"] += 1
 
-
     def step(self, state) -> int:
         raise NotImplementedError
 
@@ -87,7 +86,6 @@ class TightPassiveAgent(ScriptedBaseAgent):
         legal_ids = _legal_action_ids(state)
         legal_set = _legal_names(self.action_map, legal_ids)
         facing_bet = "call" in legal_set
-
 
         action_id: int | None = None
 
@@ -127,7 +125,6 @@ class LooseAggressiveAgent(ScriptedBaseAgent):
         legal_set = _legal_names(self.action_map, legal_ids)
 
         facing_bet = "call" in legal_set
-
 
         action_id: int | None = None
 
