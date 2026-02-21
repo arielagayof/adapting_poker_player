@@ -13,13 +13,6 @@ def _legal_action_ids(state) -> list[int]:
     return list(legal)
 
 
-def _raw_legal_set(state) -> set[str]:
-    raw = state.get("raw_legal_actions")
-    if not raw:
-        return set()
-    return {str(x).lower() for x in raw}
-
-
 def _id_for_name(action_map: ActionMap, legal_ids: list[int], name: str) -> int | None:
     for aid in legal_ids:
         if action_map.id_to_name.get(aid, str(aid)) == name:
@@ -28,15 +21,19 @@ def _id_for_name(action_map: ActionMap, legal_ids: list[int], name: str) -> int 
 
 
 def _id_for_call(action_map: ActionMap, legal_ids: list[int]) -> int | None:
-    # Some RLCard setups may effectively merge check/call behavior.
-    return _id_for_name(action_map, legal_ids, "call") or _id_for_name(
-        action_map, legal_ids, "check"
+    # Some RLCard setups merge check/call into a single CHECK_CALL action.
+    return (
+        _id_for_name(action_map, legal_ids, "call")
+        or _id_for_name(action_map, legal_ids, "check_call")
+        or _id_for_name(action_map, legal_ids, "check")
     )
 
 
 def _id_for_check(action_map: ActionMap, legal_ids: list[int]) -> int | None:
-    return _id_for_name(action_map, legal_ids, "check") or _id_for_name(
-        action_map, legal_ids, "call"
+    return (
+        _id_for_name(action_map, legal_ids, "check")
+        or _id_for_name(action_map, legal_ids, "check_call")
+        or _id_for_name(action_map, legal_ids, "call")
     )
 
 
@@ -54,6 +51,33 @@ def _pick_first_legal(
     return None
 
 
+def _is_facing_bet(state, legal_names: set[str]) -> bool:
+    """
+    Determine whether acting player is facing a bet/raise.
+
+    RLCard no-limit-holdem exposes this in raw_obs.stakes:
+    if current player's stake is below the table max, they are facing action.
+    """
+    raw_obs = state.get("raw_obs")
+    if isinstance(raw_obs, dict):
+        stakes = raw_obs.get("stakes")
+        current_player = raw_obs.get("current_player")
+        if isinstance(stakes, (list, tuple)) and isinstance(current_player, int):
+            if 0 <= current_player < len(stakes):
+                return stakes[current_player] > min(stakes)
+
+    # Fallback heuristic for synthetic tests without raw_obs.
+    if "call" in legal_names and "check" not in legal_names:
+        return True
+    return False
+
+
+def _display_action_name(raw_name: str, facing_bet: bool) -> str:
+    if raw_name == "check_call":
+        return "call" if facing_bet else "check"
+    return raw_name
+
+
 class ScriptedBaseAgent:
     """Base class for simple scripted opponents."""
 
@@ -65,7 +89,8 @@ class ScriptedBaseAgent:
         self.facing_bet_counter: Counter[str] = Counter()  # keys: "yes"/"no"
 
     def _record(self, action_id: int, facing_bet: bool) -> None:
-        name = self.action_map.id_to_name.get(action_id, str(action_id))
+        raw_name = self.action_map.id_to_name.get(action_id, str(action_id))
+        name = _display_action_name(raw_name, facing_bet)
         self.action_counter[name] += 1
         self.facing_bet_counter["yes" if facing_bet else "no"] += 1
 
@@ -85,7 +110,7 @@ class TightPassiveAgent(ScriptedBaseAgent):
     def step(self, state) -> int:
         legal_ids = _legal_action_ids(state)
         legal_set = _legal_names(self.action_map, legal_ids)
-        facing_bet = "call" in legal_set
+        facing_bet = _is_facing_bet(state, legal_set)
 
         action_id: int | None = None
 
@@ -95,7 +120,9 @@ class TightPassiveAgent(ScriptedBaseAgent):
             elif self.rng.random() < 0.80:
                 action_id = _id_for_call(self.action_map, legal_ids)
             else:
-                action_id = _pick_first_legal(self.action_map, legal_ids, ["fold", "call", "check"])
+                action_id = _pick_first_legal(
+                    self.action_map, legal_ids, ["fold", "call", "check_call", "check"]
+                )
         else:
             if self.rng.random() < 0.85:
                 action_id = _id_for_check(self.action_map, legal_ids)
@@ -105,7 +132,9 @@ class TightPassiveAgent(ScriptedBaseAgent):
                 action_id = _id_for_name(self.action_map, legal_ids, "raise_pot")
             else:
                 action_id = _pick_first_legal(
-                    self.action_map, legal_ids, ["check", "call", "raise_half_pot", "raise_pot"]
+                    self.action_map,
+                    legal_ids,
+                    ["check", "check_call", "call", "raise_half_pot", "raise_pot"],
                 )
 
         if action_id is None:
@@ -124,7 +153,7 @@ class LooseAggressiveAgent(ScriptedBaseAgent):
         legal_ids = _legal_action_ids(state)
         legal_set = _legal_names(self.action_map, legal_ids)
 
-        facing_bet = "call" in legal_set
+        facing_bet = _is_facing_bet(state, legal_set)
 
         action_id: int | None = None
 
@@ -139,7 +168,7 @@ class LooseAggressiveAgent(ScriptedBaseAgent):
             action_id = _pick_first_legal(
                 self.action_map,
                 legal_ids,
-                ["call", "check", "raise_half_pot", "raise_pot", "all_in", "fold"],
+                ["call", "check_call", "check", "raise_half_pot", "raise_pot", "all_in", "fold"],
             )
 
         if action_id is None:
@@ -158,7 +187,7 @@ class CallingStationAgent(ScriptedBaseAgent):
         legal_ids = _legal_action_ids(state)
         legal_set = _legal_names(self.action_map, legal_ids)
 
-        facing_bet = "call" in legal_set
+        facing_bet = _is_facing_bet(state, legal_set)
 
         action_id: int | None = None
 
@@ -169,14 +198,16 @@ class CallingStationAgent(ScriptedBaseAgent):
                 action_id = _id_for_name(self.action_map, legal_ids, "raise_half_pot")
             else:
                 action_id = _pick_first_legal(
-                    self.action_map, legal_ids, ["call", "check", "raise_half_pot", "fold"]
+                    self.action_map,
+                    legal_ids,
+                    ["call", "check_call", "check", "raise_half_pot", "fold"],
                 )
         else:
             if self.rng.random() < 0.90:
                 action_id = _id_for_check(self.action_map, legal_ids)
             else:
                 action_id = _pick_first_legal(
-                    self.action_map, legal_ids, ["check", "call", "raise_half_pot"]
+                    self.action_map, legal_ids, ["check", "check_call", "call", "raise_half_pot"]
                 )
 
         if action_id is None:

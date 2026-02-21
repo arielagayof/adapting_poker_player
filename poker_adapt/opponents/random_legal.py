@@ -6,6 +6,23 @@ from collections import Counter
 from poker_adapt.opponents.action_map import ActionMap
 
 
+def _is_facing_bet(state) -> bool:
+    raw_obs = state.get("raw_obs")
+    if isinstance(raw_obs, dict):
+        stakes = raw_obs.get("stakes")
+        current_player = raw_obs.get("current_player")
+        if isinstance(stakes, (list, tuple)) and isinstance(current_player, int):
+            if 0 <= current_player < len(stakes):
+                return stakes[current_player] > min(stakes)
+    return False
+
+
+def _display_action_name(raw_name: str, facing_bet: bool) -> str:
+    if raw_name == "check_call":
+        return "call" if facing_bet else "check"
+    return raw_name
+
+
 class RandomLegalAgent:
     """Agent that picks a uniformly random legal action."""
 
@@ -20,7 +37,9 @@ class RandomLegalAgent:
         legal_ids = list(legal.keys()) if hasattr(legal, "keys") else list(legal)
         action_id = self.rng.choice(legal_ids)
 
-        name = self.action_map.id_to_name.get(action_id, str(action_id))
+        facing_bet = _is_facing_bet(state)
+        raw_name = self.action_map.id_to_name.get(action_id, str(action_id))
+        name = _display_action_name(raw_name, facing_bet)
         self.action_counter[name] += 1
         return action_id
 
